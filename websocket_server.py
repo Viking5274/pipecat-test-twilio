@@ -45,7 +45,7 @@ def pcmu_to_pcm(audio_data) -> bytes:
     """
     # audio_data = base64.b64decode(data)
     audio = AudioSegment.from_raw(io.BytesIO(audio_data), sample_width=1, frame_rate=8000, channels=1, codec="ulaw")
-    audio.set_frame_rate(16000)
+    audio = audio.set_frame_rate(16000)
     # return audio.raw_data
 
     pcm_io = io.BytesIO()
@@ -70,10 +70,8 @@ class WebsocketServerInputTransport(BaseInputTransport):
 
         self._websocket: websockets.WebSocketServerProtocol | None = None
 
-        self._client_audio_queue = queue.Queue()
         self._stop_server_event = asyncio.Event()
         self._whisper_service = WhisperSTTService()
-        self.audio_buffer = bytearray()
 
     async def start(self, frame: StartFrame):
         self._server_task = self.get_event_loop().create_task(self._server_task_handler())
@@ -83,12 +81,6 @@ class WebsocketServerInputTransport(BaseInputTransport):
         self._stop_server_event.set()
         await self._server_task
         await super().stop()
-
-    def read_next_audio_frame(self) -> AudioRawFrame | None:
-        try:
-            return self._client_audio_queue.get(timeout=1)
-        except queue.Empty:
-            return None
 
     async def _server_task_handler(self):
         logger.info(f"Starting websocket server on {self._host}:{self._port}")
@@ -115,21 +107,16 @@ class WebsocketServerInputTransport(BaseInputTransport):
             if data['event'] == 'media':
                 payload_base64 = data['media']['payload']
                 audio_data = base64.b64decode(payload_base64)
-                self.audio_buffer.extend(audio_data)
 
-                if len(self.audio_buffer) >= 40000:
-                    pcm_bytes = pcmu_to_pcm(self.audio_buffer)
-                    # Remove the WAV header before passing to run_stt
-                    pcm_bytes = pcm_bytes[44:]
-                    async for transcription in self._whisper_service.run_stt(pcm_bytes):
-                        print(transcription)
-                    self.audio_buffer.clear()
+                pcm_bytes = pcmu_to_pcm(audio_data)
+                # Remove the WAV header before passing to run_stt
+                pcm_bytes = pcm_bytes[44:]
+                # async for transcription
+                frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
+                # frame = AudioRawFrame(audio=b'', num_channels=1, sample_rate=16000)
 
-                    frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
-                    if isinstance(frame, AudioRawFrame) and self._params.audio_in_enabled:
-                        self._client_audio_queue.put_nowait(frame)
-                    else:
-                        await self._internal_push_frame(frame)
+                if self._params.audio_in_enabled:
+                    self.push_audio_frame(frame)
 
         # Notify disconnection
         await self._callbacks.on_client_disconnected(websocket)

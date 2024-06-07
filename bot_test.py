@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 logger.remove(0)
-logger.add(sys.stderr, level="DEBUG")
+logger.add(sys.stderr, level="TRACE")
 
 
 class MessagesProcessor(FrameProcessor):
@@ -48,8 +48,8 @@ async def main():
             params=WebsocketServerParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                # add_wav_header=True,
-                transcription_enabled=True,
+                add_wav_header=False,
+                transcription_enabled=False,
                 vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
                 vad_audio_passthrough=True

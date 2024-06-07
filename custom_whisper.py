@@ -68,9 +68,10 @@ class WhisperSTTService(STTService):
         segments, _ = await asyncio.to_thread(self._model.transcribe, audio_float)
         text: str = ""
         for segment in segments:
+            print(segment)
             if segment.no_speech_prob < self._no_speech_prob:
                 text += f"{segment.text} "
 
         if text:
-            print(text, flush=True)
+            print(text)
             yield TranscriptionFrame(text, "", int(time.time_ns() / 1000000))
