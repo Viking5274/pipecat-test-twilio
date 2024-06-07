@@ -23,7 +23,6 @@ except ModuleNotFoundError as e:
         "In order to use Whisper, you need to `pip install pipecat-ai[whisper]`.")
     raise Exception(f"Missing module: {e}")
 
-
 audio_buffer = bytearray()
 
 class Model(Enum):
@@ -99,6 +98,7 @@ def pcmu_to_pcm(data: bytes) -> bytes:
 
 async def consumer_handler(websocket):
     global audio_buffer
+    whisper_service = WhisperSTTService()
     try:
         while True:
             message = await websocket.recv()
@@ -109,20 +109,29 @@ async def consumer_handler(websocket):
                 audio_data = base64.b64decode(payload_base64)
                 # Append this data to the buffer
                 audio_buffer.extend(audio_data)
-                # Check if the buffer has 5 seconds of audio
-                while len(audio_buffer) >= 40000:
+                # Process the buffer when it reaches a certain size
+                if len(audio_buffer) >= 40000:
                     # Convert buffer to PCM bytes
-                    pcm_bytes = pcmu_to_pcm(audio_buffer[:40000])
+                    pcm_bytes = pcmu_to_pcm(audio_buffer)
                     # Remove the WAV header before passing to run_stt
                     pcm_bytes = pcm_bytes[44:]
                     # Run STT
-                    whisper_service = WhisperSTTService()
                     async for transcription in whisper_service.run_stt(pcm_bytes):
                         print(transcription)
-                    # Remove the processed audio from the buffer
-                    audio_buffer = audio_buffer[40000:]
+                    # Clear the buffer
+                    audio_buffer.clear()
     except websockets.exceptions.ConnectionClosed:
         print("Connection closed")
+    finally:
+        if audio_buffer:
+            # Convert remaining buffer to PCM bytes
+            pcm_bytes = pcmu_to_pcm(audio_buffer)
+            # Remove the WAV header before passing to run_stt
+            pcm_bytes = pcm_bytes[44:]
+            # Run STT
+            async for transcription in whisper_service.run_stt(pcm_bytes):
+                print(transcription)
+            audio_buffer.clear()
 
 
 async def server():

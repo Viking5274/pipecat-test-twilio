@@ -48,7 +48,8 @@ async def main():
             params=WebsocketServerParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                add_wav_header=True,
+                # add_wav_header=True,
+                transcription_enabled=True,
                 vad_enabled=True,
                 vad_analyzer=SileroVADAnalyzer(),
                 vad_audio_passthrough=True

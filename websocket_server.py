@@ -17,7 +17,7 @@ from typing import Awaitable, Callable
 
 from pydantic.main import BaseModel
 
-from pipecat.frames.frames import AudioRawFrame, StartFrame
+from pipecat.frames.frames import AudioRawFrame, StartFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -25,6 +25,8 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from loguru import logger
 from pydub import AudioSegment
+
+from custom_whisper import WhisperSTTService
 
 
 class WebsocketServerParams(TransportParams):
@@ -37,11 +39,11 @@ class WebsocketServerCallbacks(BaseModel):
     on_client_disconnected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
 
 
-def pcmu_to_pcm(data) -> bytes:
+def pcmu_to_pcm(audio_data) -> bytes:
     """
     Convert PCMU data to PCM.
     """
-    audio_data = base64.b64decode(data)
+    # audio_data = base64.b64decode(data)
     audio = AudioSegment.from_raw(io.BytesIO(audio_data), sample_width=1, frame_rate=8000, channels=1, codec="ulaw")
     audio.set_frame_rate(16000)
     # return audio.raw_data
@@ -70,6 +72,8 @@ class WebsocketServerInputTransport(BaseInputTransport):
 
         self._client_audio_queue = queue.Queue()
         self._stop_server_event = asyncio.Event()
+        self._whisper_service = WhisperSTTService()
+        self.audio_buffer = bytearray()
 
     async def start(self, frame: StartFrame):
         self._server_task = self.get_event_loop().create_task(self._server_task_handler())
@@ -105,17 +109,27 @@ class WebsocketServerInputTransport(BaseInputTransport):
         # Handle incoming messages
         async for message in websocket:
             data = json.loads(message)
-            # print(data, flush=True)
             global sid
             sid = data['streamSid'] if data.get("streamSid") else None
 
             if data['event'] == 'media':
-                payload = pcmu_to_pcm(data['media']['payload'])
-                frame = AudioRawFrame(audio=payload, num_channels=1, sample_rate=16000)
-                if isinstance(frame, AudioRawFrame) and self._params.audio_in_enabled:
-                    self._client_audio_queue.put_nowait(frame)
-                else:
-                    await self._internal_push_frame(frame)
+                payload_base64 = data['media']['payload']
+                audio_data = base64.b64decode(payload_base64)
+                self.audio_buffer.extend(audio_data)
+
+                if len(self.audio_buffer) >= 40000:
+                    pcm_bytes = pcmu_to_pcm(self.audio_buffer)
+                    # Remove the WAV header before passing to run_stt
+                    pcm_bytes = pcm_bytes[44:]
+                    async for transcription in self._whisper_service.run_stt(pcm_bytes):
+                        print(transcription)
+                    self.audio_buffer.clear()
+
+                    frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
+                    if isinstance(frame, AudioRawFrame) and self._params.audio_in_enabled:
+                        self._client_audio_queue.put_nowait(frame)
+                    else:
+                        await self._internal_push_frame(frame)
 
         # Notify disconnection
         await self._callbacks.on_client_disconnected(websocket)
