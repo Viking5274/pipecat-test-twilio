@@ -14,6 +14,7 @@ import wave
 import websockets
 
 from typing import Awaitable, Callable
+
 from pydantic.main import BaseModel
 
 from pipecat.frames.frames import AudioRawFrame, StartFrame
@@ -23,6 +24,7 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from loguru import logger
+from pydub import AudioSegment
 
 
 class WebsocketServerParams(TransportParams):
@@ -35,61 +37,18 @@ class WebsocketServerCallbacks(BaseModel):
     on_client_disconnected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
 
 
-import base64
-import numpy as np
-from pydub import AudioSegment
-from io import BytesIO
+def pcmu_to_pcm(data) -> bytes:
+    """
+    Convert PCMU data to PCM.
+    """
+    audio_data = base64.b64decode(data)
+    audio = AudioSegment.from_raw(io.BytesIO(audio_data), sample_width=1, frame_rate=8000, channels=1, codec="ulaw")
+    audio.set_frame_rate(16000)
+    # return audio.raw_data
 
-
-def pcmu_to_pcm(pcmu_data):
-    # G.711 u-law to linear PCM conversion
-    pcm = np.zeros(len(pcmu_data), dtype=np.int16)
-    for i, byte in enumerate(pcmu_data):
-        pcm[i] = ulaw2linear(byte)
-    return pcm.tobytes()
-
-
-def ulaw2linear(ulawbyte):
-    """Convert a u-law byte to a linear 16-bit PCM value."""
-    BIAS = 0x84
-    CLIP = 32635
-    exp_lut = [
-        0, 132, 396, 924, 1980, 4092, 8316, 16764
-    ]
-    ulawbyte = ~ulawbyte
-    sign = (ulawbyte & 0x80)
-    exponent = (ulawbyte >> 4) & 0x07
-    mantissa = ulawbyte & 0x0F
-    sample = exp_lut[exponent] + (mantissa << (exponent + 3))
-    if sign != 0:
-        sample = -sample
-    return sample
-
-
-def transform_audio(payload: str) -> bytes:
-    # Step 1: Decode base64 payload
-    pcmu_data = base64.b64decode(payload)
-
-    # Step 2: Convert PCMU to PCM
-    pcm_data = pcmu_to_pcm(pcmu_data)
-
-    # Step 3: Create an AudioSegment from PCM data with a sample rate of 8000 Hz
-    audio_segment = AudioSegment(
-        data=pcm_data,
-        sample_width=2,  # 16-bit audio
-        frame_rate=8000,
-        channels=1
-    )
-
-    # Step 4: Resample audio to 16000 Hz
-    resampled_audio = audio_segment.set_frame_rate(16000)
-
-    # Step 5: Export audio to bytes (16-bit PCM)
-    pcm_bytes_io = BytesIO()
-    resampled_audio.export(pcm_bytes_io, format="raw")
-    pcm_bytes = pcm_bytes_io.getvalue()
-
-    return pcm_bytes
+    pcm_io = io.BytesIO()
+    audio.export(pcm_io, format="wav", codec="pcm_s16le")
+    return pcm_io.getvalue()
 
 
 class WebsocketServerInputTransport(BaseInputTransport):
@@ -149,9 +108,9 @@ class WebsocketServerInputTransport(BaseInputTransport):
             # print(data, flush=True)
             global sid
             sid = data['streamSid'] if data.get("streamSid") else None
-            if data['event'] == 'media':
 
-                payload = transform_audio(data['media']['payload'])
+            if data['event'] == 'media':
+                payload = pcmu_to_pcm(data['media']['payload'])
                 frame = AudioRawFrame(audio=payload, num_channels=1, sample_rate=16000)
                 if isinstance(frame, AudioRawFrame) and self._params.audio_in_enabled:
                     self._client_audio_queue.put_nowait(frame)
@@ -274,4 +233,3 @@ class WebsocketServerTransport(BaseTransport):
             await self._call_event_handler("on_client_disconnected", websocket)
         else:
             logger.error("A WebsocketServerTransport output is missing in the pipeline")
-
