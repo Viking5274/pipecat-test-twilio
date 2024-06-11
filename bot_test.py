@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 
+from deepgram import LiveOptions
 from pipecat.frames.frames import LLMMessagesFrame, Frame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -16,8 +17,7 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
 from custom_elevenlabs import ElevenLabsTTSService
 from pipecat.services.openai import OpenAILLMService
-# from pipecat.services.whisper import WhisperSTTService
-from custom_whisper import WhisperSTTService
+from DeepgramSTT import DeepgramSTTService
 from websocket_server import WebsocketServerParams, WebsocketServerTransport
 from pipecat.vad.silero import SileroVADAnalyzer
 
@@ -27,7 +27,7 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 logger.remove(0)
-logger.add(sys.stderr, level="TRACE")
+logger.add(sys.stderr, level="DEBUG")
 
 
 class MessagesProcessor(FrameProcessor):
@@ -48,10 +48,8 @@ async def main():
             params=WebsocketServerParams(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                add_wav_header=False,
-                transcription_enabled=False,
                 vad_enabled=True,
-                vad_analyzer=SileroVADAnalyzer(),
+                vad_analyzer=SileroVADAnalyzer(sample_rate=8000),
                 vad_audio_passthrough=True
             )
         )
@@ -59,8 +57,17 @@ async def main():
         llm = OpenAILLMService(
             api_key=os.getenv("OPENAI_API_KEY"),
             model="gpt-4o")
-
-        stt = WhisperSTTService()
+        options = LiveOptions(
+            encoding="mulaw",
+            language="en-US",
+            endpointing='true',
+            model="nova-2-conversationalai",
+            sample_rate=8000,
+            channels=1,
+            interim_results=True,
+            smart_format=True,
+        )
+        stt = DeepgramSTTService(api_key=os.environ.get('DEEPGRAM_API_KEY'), live_options=options)
 
         tts = ElevenLabsTTSService(
             aiohttp_session=session,
@@ -90,7 +97,7 @@ async def main():
             tma_out              # LLM responses
         ])
 
-        task = PipelineTask(pipeline)
+        task = PipelineTask(pipeline, PipelineParams(allow_interruptions=True))
 
         @transport.event_handler("on_client_connected")
         async def on_client_connected(transport, client):

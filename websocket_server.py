@@ -9,7 +9,6 @@ import asyncio
 import base64
 import io
 import json
-import queue
 import wave
 import websockets
 
@@ -17,17 +16,13 @@ from typing import Awaitable, Callable
 
 from pydantic.main import BaseModel
 
-from pipecat.frames.frames import AudioRawFrame, StartFrame, TranscriptionFrame
+from pipecat.frames.frames import AudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from loguru import logger
-from pydub import AudioSegment
-
-from custom_whisper import WhisperSTTService
-
 
 class WebsocketServerParams(TransportParams):
     add_wav_header: bool = False
@@ -37,20 +32,6 @@ class WebsocketServerParams(TransportParams):
 class WebsocketServerCallbacks(BaseModel):
     on_client_connected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
     on_client_disconnected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
-
-
-def pcmu_to_pcm(audio_data) -> bytes:
-    """
-    Convert PCMU data to PCM.
-    """
-    # audio_data = base64.b64decode(data)
-    audio = AudioSegment.from_raw(io.BytesIO(audio_data), sample_width=1, frame_rate=8000, channels=1, codec="ulaw")
-    audio = audio.set_frame_rate(16000)
-    # return audio.raw_data
-
-    pcm_io = io.BytesIO()
-    audio.export(pcm_io, format="wav", codec="pcm_s16le")
-    return pcm_io.getvalue()
 
 
 class WebsocketServerInputTransport(BaseInputTransport):
@@ -71,7 +52,6 @@ class WebsocketServerInputTransport(BaseInputTransport):
         self._websocket: websockets.WebSocketServerProtocol | None = None
 
         self._stop_server_event = asyncio.Event()
-        self._whisper_service = WhisperSTTService()
 
     async def start(self, frame: StartFrame):
         self._server_task = self.get_event_loop().create_task(self._server_task_handler())
@@ -108,12 +88,7 @@ class WebsocketServerInputTransport(BaseInputTransport):
                 payload_base64 = data['media']['payload']
                 audio_data = base64.b64decode(payload_base64)
 
-                pcm_bytes = pcmu_to_pcm(audio_data)
-                # Remove the WAV header before passing to run_stt
-                pcm_bytes = pcm_bytes[44:]
-                # async for transcription
-                frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
-                # frame = AudioRawFrame(audio=b'', num_channels=1, sample_rate=16000)
+                frame = AudioRawFrame(audio=audio_data, num_channels=1, sample_rate=8000)
 
                 if self._params.audio_in_enabled:
                     self.push_audio_frame(frame)
