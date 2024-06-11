@@ -6,23 +6,25 @@
 
 
 import asyncio
+import audioop
 import base64
 import io
 import json
 import wave
 import websockets
-
 from typing import Awaitable, Callable
 
 from pydantic.main import BaseModel
 
-from pipecat.frames.frames import AudioRawFrame, StartFrame
+from pipecat.frames.frames import AudioRawFrame, StartFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameProcessor
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from loguru import logger
+from pydub import AudioSegment
+
 
 class WebsocketServerParams(TransportParams):
     add_wav_header: bool = False
@@ -32,6 +34,32 @@ class WebsocketServerParams(TransportParams):
 class WebsocketServerCallbacks(BaseModel):
     on_client_connected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
     on_client_disconnected: Callable[[websockets.WebSocketServerProtocol], Awaitable[None]]
+
+
+def mulaw_to_pcm16(data):
+    # Convert mu-law to PCM
+    pcm_data = audioop.ulaw2lin(data, 2)
+    return pcm_data
+
+
+def resample(pcm_data, src_rate, dst_rate):
+    # Resample PCM data from src_rate to dst_rate
+    resampled_data = audioop.ratecv(pcm_data, 2, 1, src_rate, dst_rate, None)[0]
+    return resampled_data
+
+
+def process_audio_chunk(data_chunk):
+    # Decode base64 if necessary
+    # import base64
+    # data_chunk = base64.b64decode(data_chunk)
+
+    # Convert mu-law to PCM
+    pcm_data = mulaw_to_pcm16(data_chunk)
+
+    # Resample PCM data from 8000 Hz to 16000 Hz
+    resampled_pcm_data = resample(pcm_data, 8000, 16000)
+
+    return resampled_pcm_data
 
 
 class WebsocketServerInputTransport(BaseInputTransport):
@@ -88,7 +116,9 @@ class WebsocketServerInputTransport(BaseInputTransport):
                 payload_base64 = data['media']['payload']
                 audio_data = base64.b64decode(payload_base64)
 
-                frame = AudioRawFrame(audio=audio_data, num_channels=1, sample_rate=8000)
+                pcm_bytes = process_audio_chunk(audio_data)
+                frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
+                # frame = AudioRawFrame(audio=b'', num_channels=1, sample_rate=16000)
 
                 if self._params.audio_in_enabled:
                     self.push_audio_frame(frame)
