@@ -1,2 +1,3 @@
 python-dotenv
+pipecat-ai==0.0.31
 pipecat-ai[openai,silero,websocket,whisper]
