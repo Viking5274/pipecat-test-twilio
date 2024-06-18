@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 
-from pipecat.frames.frames import LLMMessagesFrame, Frame
+from pipecat.frames.frames import LLMMessagesFrame, Frame, AudioRawFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -14,9 +14,9 @@ from pipecat.processors.aggregators.llm_response import (
 )
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
-from custom_elevenlabs import ElevenLabsTTSService
 from pipecat.services.openai import OpenAILLMService
-from DeepgramSTT import DeepgramSTTService
+from pipecat.services.deepgram import DeepgramSTTService
+from pipecat.services.elevenlabs import ElevenLabsTTSService
 from websocket_server import WebsocketServerParams, WebsocketServerTransport
 from pipecat.vad.silero import SileroVADAnalyzer
 
@@ -37,6 +37,9 @@ class MessagesProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         if isinstance(frame, LLMMessagesFrame):
             print(frame.messages, flush=True)
+
+        if isinstance(frame, AudioRawFrame):
+            return
 
         await self.push_frame(frame, direction)
 

@@ -1,10 +1,3 @@
-#
-# Copyright (c) 2024, Daily
-#
-# SPDX-License-Identifier: BSD 2-Clause License
-#
-
-
 import asyncio
 import audioop
 import base64
@@ -12,23 +5,25 @@ import io
 import json
 import wave
 import websockets
-from typing import Awaitable, Callable
 
+from typing import Awaitable, Callable
 from pydantic.main import BaseModel
 
-from pipecat.frames.frames import AudioRawFrame, StartFrame, TranscriptionFrame
+from pipecat.frames.frames import AudioRawFrame, StartFrame
 from pipecat.processors.frame_processor import FrameProcessor
+from pipecat.serializers.base_serializer import FrameSerializer
+from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
 from loguru import logger
-from pydub import AudioSegment
 
 
 class WebsocketServerParams(TransportParams):
     add_wav_header: bool = False
     audio_frame_size: int = 6400  # 200ms
+    serializer: FrameSerializer = ProtobufFrameSerializer()
 
 
 class WebsocketServerCallbacks(BaseModel):
@@ -62,6 +57,16 @@ def process_audio_chunk(data_chunk):
     return resampled_pcm_data
 
 
+def pcm_16000_to_ulaw_8000(pcm_16000_bytes):
+    # Resample from 16000 Hz to 8000 Hz
+    pcm_8000_bytes = audioop.ratecv(pcm_16000_bytes, 2, 1, 16000, 8000, None)[0]
+
+    # Convert PCM to μ-law
+    ulaw_8000_bytes = audioop.lin2ulaw(pcm_8000_bytes, 2)
+
+    return ulaw_8000_bytes
+
+
 class WebsocketServerInputTransport(BaseInputTransport):
 
     def __init__(
@@ -69,8 +74,9 @@ class WebsocketServerInputTransport(BaseInputTransport):
             host: str,
             port: int,
             params: WebsocketServerParams,
-            callbacks: WebsocketServerCallbacks):
-        super().__init__(params)
+            callbacks: WebsocketServerCallbacks,
+            **kwargs):
+        super().__init__(params, **kwargs)
 
         self._host = host
         self._port = port
@@ -118,10 +124,14 @@ class WebsocketServerInputTransport(BaseInputTransport):
 
                 pcm_bytes = process_audio_chunk(audio_data)
                 frame = AudioRawFrame(audio=pcm_bytes, num_channels=1, sample_rate=16000)
-                # frame = AudioRawFrame(audio=b'', num_channels=1, sample_rate=16000)
 
-                if self._params.audio_in_enabled:
+                if not frame:
+                    continue
+
+                if isinstance(frame, AudioRawFrame):
                     self.push_audio_frame(frame)
+                else:
+                    await self._internal_push_frame(frame)
 
         # Notify disconnection
         await self._callbacks.on_client_disconnected(websocket)
@@ -134,8 +144,8 @@ class WebsocketServerInputTransport(BaseInputTransport):
 
 class WebsocketServerOutputTransport(BaseOutputTransport):
 
-    def __init__(self, params: WebsocketServerParams):
-        super().__init__(params)
+    def __init__(self, params: WebsocketServerParams, **kwargs):
+        super().__init__(params, **kwargs)
 
         self._params = params
 
@@ -151,7 +161,6 @@ class WebsocketServerOutputTransport(BaseOutputTransport):
 
     def write_raw_audio_frames(self, frames: bytes):
         self._audio_buffer += frames
-        global sid
         while len(self._audio_buffer) >= self._params.audio_frame_size:
             frame = AudioRawFrame(
                 audio=self._audio_buffer[:self._params.audio_frame_size],
@@ -174,10 +183,8 @@ class WebsocketServerOutputTransport(BaseOutputTransport):
                     num_channels=frame.num_channels)
                 frame = wav_frame
 
-            # proto = self._params.serializer.serialize(frame)
-            # proto = base64.b64decode(frame.audio)
-
-            payload = base64.b64encode(frame.audio).decode('utf-8')
+            payload = pcm_16000_to_ulaw_8000(frame.audio)
+            payload = base64.b64encode(payload).decode('utf-8')
             answer_dict = {"event": "media",
                            "streamSid": sid,
                            "media": {"payload": payload}}
@@ -196,8 +203,10 @@ class WebsocketServerTransport(BaseTransport):
             host: str = "localhost",
             port: int = 8765,
             params: WebsocketServerParams = WebsocketServerParams(),
+            input_name: str | None = None,
+            output_name: str | None = None,
             loop: asyncio.AbstractEventLoop | None = None):
-        super().__init__(loop)
+        super().__init__(input_name=input_name, output_name=output_name, loop=loop)
         self._host = host
         self._port = port
         self._params = params
@@ -218,12 +227,12 @@ class WebsocketServerTransport(BaseTransport):
     def input(self) -> FrameProcessor:
         if not self._input:
             self._input = WebsocketServerInputTransport(
-                self._host, self._port, self._params, self._callbacks)
+                self._host, self._port, self._params, self._callbacks, name=self._input_name)
         return self._input
 
     def output(self) -> FrameProcessor:
         if not self._output:
-            self._output = WebsocketServerOutputTransport(self._params)
+            self._output = WebsocketServerOutputTransport(self._params, name=self._output_name)
         return self._output
 
     async def _on_client_connected(self, websocket):
